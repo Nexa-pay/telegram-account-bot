@@ -1,6 +1,9 @@
 import asyncpg
 from datetime import datetime
 from typing import Optional, List, Dict
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, dsn):
@@ -9,12 +12,23 @@ class Database:
 
     async def connect(self):
         """Create connection pool"""
-        self.pool = await asyncpg.create_pool(self.dsn)
+        try:
+            self.pool = await asyncpg.create_pool(
+                self.dsn,
+                min_size=1,
+                max_size=10,
+                command_timeout=60
+            )
+            logger.info("Database pool created")
+        except Exception as e:
+            logger.error(f"Failed to create database pool: {e}")
+            raise
 
     async def close(self):
         """Close connection pool"""
         if self.pool:
             await self.pool.close()
+            logger.info("Database pool closed")
 
     async def init_db(self):
         """Initialize database tables"""
@@ -33,11 +47,12 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_phone_number ON telegram_accounts(phone_number);
                 CREATE INDEX IF NOT EXISTS idx_is_active ON telegram_accounts(is_active);
             ''')
+            logger.info("Database tables initialized")
 
     async def add_account(self, phone_number: str, session_string: str, added_by: int) -> int:
         """Add new account to database"""
         async with self.pool.acquire() as conn:
-            result = await conn.execute('''
+            result = await conn.fetchval('''
                 INSERT INTO telegram_accounts (phone_number, session_string, added_by)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (phone_number) DO UPDATE 
@@ -46,8 +61,7 @@ class Database:
                 RETURNING id
             ''', phone_number, session_string, added_by)
             
-            # Parse the result to get the ID
-            return int(result.split()[-1]) if result else None
+            return result
 
     async def get_accounts(self, active_only: bool = False) -> List[Dict]:
         """Get all accounts"""
@@ -108,7 +122,7 @@ class Database:
             total = await conn.fetchval('SELECT COUNT(*) FROM telegram_accounts')
             active = await conn.fetchval('SELECT COUNT(*) FROM telegram_accounts WHERE is_active = true')
             return {
-                'total': total,
-                'active': active,
-                'inactive': total - active
+                'total': total or 0,
+                'active': active or 0,
+                'inactive': (total or 0) - (active or 0)
             }
