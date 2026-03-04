@@ -1,20 +1,67 @@
 import asyncio
+import logging
+import sys
 from telethon import TelegramClient, events, Button
 from telethon.errors import SessionPasswordNeededError
 from config import Config
 from database import Database
-import logging
 
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Initialize bot and database
-bot = TelegramClient('bot', Config.API_ID, Config.API_HASH).start(bot_token=Config.BOT_TOKEN)
-db = Database(Config.DATABASE_URL)
+# Global variables
+bot = None
+db = None
+
+async def startup():
+    """Initialize bot and database"""
+    global bot, db
+    
+    logger.info("Starting up...")
+    
+    # Validate configuration
+    try:
+        Config.validate()
+        logger.info("Configuration validated successfully")
+        logger.info(f"API_ID: {Config.API_ID}")
+        logger.info(f"API_HASH length: {len(Config.API_HASH) if Config.API_HASH else 0}")
+        logger.info(f"BOT_TOKEN length: {len(Config.BOT_TOKEN) if Config.BOT_TOKEN else 0}")
+        logger.info(f"ADMIN_IDS: {Config.ADMIN_IDS}")
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        sys.exit(1)
+    
+    # Initialize database
+    try:
+        db = Database(Config.DATABASE_URL)
+        await db.connect()
+        await db.init_db()
+        logger.info("Database connected successfully")
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        sys.exit(1)
+    
+    # Initialize bot
+    try:
+        bot = TelegramClient('bot_session', Config.API_ID, Config.API_HASH)
+        await bot.start(bot_token=Config.BOT_TOKEN)
+        logger.info("Bot started successfully")
+        
+        # Get bot info
+        me = await bot.get_me()
+        logger.info(f"Bot username: @{me.username}")
+        
+        return bot
+    except Exception as e:
+        logger.error(f"Bot initialization error: {e}")
+        sys.exit(1)
 
 # Store user states for adding accounts
 user_states = {}
@@ -22,12 +69,21 @@ user_states = {}
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
     """Start command handler"""
+    if db is None:
+        return await event.respond("❌ Database not connected. Please try again later.")
+    
     stats = await db.get_stats()
+    
+    # Check if user is authorized
+    is_admin = event.sender_id in Config.ADMIN_IDS if Config.ADMIN_IDS else False
+    
+    if not is_admin:
+        return await event.respond("❌ You are not authorized to use this bot.")
     
     text = f"""
 🚀 **Telegram Account Manager Bot**
 
-Manage your Telegram accounts efficiently!
+Welcome! Manage your Telegram accounts efficiently.
 
 📊 **Statistics:**
 • Total Accounts: {stats['total']}
@@ -147,6 +203,7 @@ async def save_account(event):
         del user_states[user_id]
         
     except Exception as e:
+        logger.error(f"Error saving account: {e}")
         await event.edit(f"❌ Error saving account: {str(e)}")
 
 @bot.on(events.CallbackQuery(data='cancel'))
@@ -288,17 +345,23 @@ async def delete_account(event):
 
 async def main():
     """Main function"""
-    # Connect to database
-    await db.connect()
-    await db.init_db()
+    global bot
     
-    logger.info("Bot started!")
-    await bot.run_until_disconnected()
+    try:
+        # Initialize everything
+        bot = await startup()
+        
+        logger.info("Bot is running...")
+        await bot.run_until_disconnected()
+        
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+    finally:
+        if db:
+            await db.close()
+            logger.info("Database connection closed")
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped!")
-    finally:
-        asyncio.run(db.close())
+    asyncio.run(main())
