@@ -1,14 +1,14 @@
 import asyncio
 import logging
 import sys
+import os
 from telethon import TelegramClient, events, Button
-from telethon.errors import SessionPasswordNeededError
 from config import Config
 from database import Database
 
-# Setup logging
+# Setup logging - FIXED: changed asftime to asctime
 logging.basicConfig(
-    format='%(asftime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(sys.stdout)
@@ -26,6 +26,8 @@ async def startup():
     global bot, db
     
     logger.info("Starting up...")
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info(f"Environment variables present: {list(os.environ.keys())}")
     
     # Validate configuration
     try:
@@ -34,13 +36,21 @@ async def startup():
         logger.info(f"API_ID: {Config.API_ID}")
         logger.info(f"API_HASH length: {len(Config.API_HASH) if Config.API_HASH else 0}")
         logger.info(f"BOT_TOKEN length: {len(Config.BOT_TOKEN) if Config.BOT_TOKEN else 0}")
+        logger.info(f"DATABASE_URL present: {bool(Config.DATABASE_URL)}")
         logger.info(f"ADMIN_IDS: {Config.ADMIN_IDS}")
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
+        logger.error("Please set the required environment variables in Railway dashboard:")
+        logger.error("- API_ID: Your Telegram API ID")
+        logger.error("- API_HASH: Your Telegram API hash")
+        logger.error("- BOT_TOKEN: Your bot token from @BotFather")
+        logger.error("- DATABASE_URL: Will be auto-set by Railway PostgreSQL")
+        logger.error("- ADMIN_IDS: Comma-separated user IDs (optional but recommended)")
         sys.exit(1)
     
     # Initialize database
     try:
+        logger.info(f"Connecting to database with URL: {Config.DATABASE_URL[:20]}...")
         db = Database(Config.DATABASE_URL)
         await db.connect()
         await db.init_db()
@@ -51,6 +61,7 @@ async def startup():
     
     # Initialize bot
     try:
+        logger.info("Initializing Telegram bot...")
         bot = TelegramClient('bot_session', Config.API_ID, Config.API_HASH)
         await bot.start(bot_token=Config.BOT_TOKEN)
         logger.info("Bot started successfully")
@@ -58,6 +69,7 @@ async def startup():
         # Get bot info
         me = await bot.get_me()
         logger.info(f"Bot username: @{me.username}")
+        logger.info(f"Bot ID: {me.id}")
         
         # Register event handlers
         register_handlers()
@@ -69,6 +81,7 @@ async def startup():
 
 def register_handlers():
     """Register all event handlers"""
+    logger.info("Registering event handlers...")
     
     @bot.on(events.NewMessage(pattern='/start'))
     async def start(event):
@@ -81,7 +94,7 @@ def register_handlers():
         # Check if user is authorized
         is_admin = event.sender_id in Config.ADMIN_IDS if Config.ADMIN_IDS else False
         
-        if not is_admin:
+        if not is_admin and Config.ADMIN_IDS:
             return await event.respond("❌ You are not authorized to use this bot.")
         
         text = f"""
@@ -116,7 +129,7 @@ Welcome! Manage your Telegram accounts efficiently.
     async def add_account_start(event):
         """Start add account process"""
         # Check if user is admin
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return await event.respond("❌ You are not authorized to use this command.")
         
         # Handle both message and callback
@@ -136,7 +149,7 @@ Welcome! Manage your Telegram accounts efficiently.
     @bot.on(events.NewMessage)
     async def handle_input(event):
         """Handle user input for adding accounts"""
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return
         
         user_id = event.chat_id
@@ -178,7 +191,7 @@ Is this correct?
     @bot.on(events.CallbackQuery(data='confirm_save'))
     async def save_account(event):
         """Save account to database"""
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return await event.answer("Unauthorized", alert=True)
         
         user_id = event.chat_id
@@ -222,7 +235,7 @@ Is this correct?
     @bot.on(events.CallbackQuery(data='list'))
     async def list_accounts(event):
         """List all accounts"""
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return await event.respond("❌ Unauthorized")
         
         if isinstance(event, events.CallbackQuery):
@@ -257,7 +270,7 @@ Is this correct?
     @bot.on(events.CallbackQuery(data='stats'))
     async def show_stats(event):
         """Show account statistics"""
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return await event.respond("❌ Unauthorized")
         
         if isinstance(event, events.CallbackQuery):
@@ -287,7 +300,7 @@ Is this correct?
     @bot.on(events.NewMessage(pattern='/activate(?:\\s+(\\d+))?'))
     async def activate_account(event):
         """Activate an account"""
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return await event.respond("❌ Unauthorized")
         
         account_id = event.pattern_match.group(1)
@@ -308,7 +321,7 @@ Is this correct?
     @bot.on(events.NewMessage(pattern='/deactivate(?:\\s+(\\d+))?'))
     async def deactivate_account(event):
         """Deactivate an account"""
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return await event.respond("❌ Unauthorized")
         
         account_id = event.pattern_match.group(1)
@@ -329,7 +342,7 @@ Is this correct?
     @bot.on(events.NewMessage(pattern='/delete(?:\\s+(\\d+))?'))
     async def delete_account(event):
         """Delete an account"""
-        if event.sender_id not in Config.ADMIN_IDS:
+        if Config.ADMIN_IDS and event.sender_id not in Config.ADMIN_IDS:
             return await event.respond("❌ Unauthorized")
         
         account_id = event.pattern_match.group(1)
@@ -346,6 +359,8 @@ Is this correct?
                 await event.respond(f"❌ Account `{account_id}` not found.")
         except ValueError:
             await event.respond("❌ Invalid account ID format.")
+    
+    logger.info("Event handlers registered successfully")
 
 async def main():
     """Main function"""
@@ -355,13 +370,15 @@ async def main():
         # Initialize everything
         bot = await startup()
         
-        logger.info("Bot is running...")
+        logger.info("Bot is running... Press Ctrl+C to stop")
         await bot.run_until_disconnected()
         
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         if db:
             await db.close()
